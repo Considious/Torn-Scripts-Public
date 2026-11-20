@@ -177,6 +177,7 @@ function initChainPage() {
 
     return injected;
 }
+
     function initRankedWarPage() {
         const factionNames = document.querySelectorAll('.faction-names .name___PlMCO');
         factionNames.forEach(nameDiv => {
@@ -356,6 +357,7 @@ function initChainPage() {
         if (header?.matches('.white-grad')) addWarLinkCell(header, true);
         for (const row of listElement.querySelectorAll(':scope > li.enemy')) addWarLinkCell(row);
     }
+
     // --- Profile Page Specific Functions ---
 
     function mainProfile(nameElement, infoTable) {
@@ -536,6 +538,7 @@ function initChainPage() {
                 }
                 saveSettings();
             });
+
             label.htmlFor = `gnsc-check-${option.key}`;
             label.textContent = option.label;
             if (!option.available) label.classList.add('disabled');
@@ -715,6 +718,7 @@ function initChainPage() {
             button.innerHTML = '<span>Fetching...</span>';
             battleStatsStr = await getCombinedStatsString(userInfo.id, settings);
         }
+
         const linkedName = playerMarkdownLink(userInfo.name, userInfo.id);
         const details = [];
         if (settings.attack) details.push(markdownLink('Attack', userInfo.attackUrl));
@@ -893,7 +897,8 @@ if (isChain) {
                     button.textContent = 'FF...';
                     try {
                         const ffResults = await fetchFFScouterSpy(settings.ffApiKey, missingIds.join(','), true);
-                        if (Array.isArray(ffResults)) {                            ffResults.forEach(r => ffDataMap[r.player_id] = r);
+                        if (Array.isArray(ffResults)) {
+                            ffResults.forEach(r => ffDataMap[r.player_id] = r);
                         }
                     } catch(e) {
                         if (debug) console.error("[GNSC-Debug] Faction FFScouter batch error", e);
@@ -1072,7 +1077,8 @@ if (isChain) {
                         reject(new Error(`API responded with status ${response.status}`));
                     }
                 },
-                onerror: (error) => reject(error),                ontimeout: () => reject(new Error("Request Timed Out"))
+                onerror: (error) => reject(error),
+                ontimeout: () => reject(new Error("Request Timed Out"))
             });
         });
     }
@@ -1251,7 +1257,8 @@ if (isChain) {
 
             Object.keys(members).forEach((id) => {
                 const status = members[id].status || members[id];
-                const userId = members[id].userID || id;                if (status.text === "Hospital") {
+                const userId = members[id].userID || id;
+                if (status.text === "Hospital") {
                     hospTime[userId] = status.updateAt;
                 } else if (hospTime[userId]) {
                    delete hospTime[userId];
