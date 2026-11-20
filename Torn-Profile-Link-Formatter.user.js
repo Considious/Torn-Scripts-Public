@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        Torn Profile Link Formatter
 // @namespace   GNSC4 [268863]
-// @version     1.6.25
+// @version     1.6.29
 // @downloadURL https://raw.githubusercontent.com/Considious/Torn-Scripts-Public/main/Torn-Profile-Link-Formatter.user.js
 // @updateURL   https://raw.githubusercontent.com/Considious/Torn-Scripts-Public/main/Torn-Profile-Link-Formatter.user.js
 // @description Formatted profile links, FFScouter fallback, and two-click faction chat sharing for members and incoming chain attacks.
@@ -306,11 +306,12 @@ function initChainPage() {
         } finally { button.disabled = false; }
     }
 
-    // Only the ENEMY side receives the Link column. No full-table layout
-    // measurements, rollback/retry logic, or styling of Level/FF/Score/Status/Attack.
+    // Only the ENEMY side receives the Link column. Retain other addons' inline
+    // width expressions; for cells with CSS-defined widths, use one batched
+    // measurement pass before any row is changed (never interleave reads/writes).
     const WAR_LINK_PX = 28;
     const processedEnemyRows = new WeakSet();
-    function addWarLinkCell(row, header = false) {
+    function addWarLinkCell(row, header = false, fallbackWidth = 0) {
         if (processedEnemyRows.has(row)) return;
         if (row.querySelector(':scope > .gnsc-link-cell')) {
             processedEnemyRows.add(row);
@@ -324,13 +325,13 @@ function initChainPage() {
         if (!header && !row.matches('li.enemy')) return;
         if (!header && !memberCell.querySelector('a[href*="profiles.php?XID="]')) return;
 
-        // Reserve space *once*, exclusively from this enemy Members cell.
-        // Keep any inline percentage/calc supplied by Torn or another addon,
-        // without attempting to reverse engineer, normalize or alter it later.
-        const existing = memberCell.style.getPropertyValue('width').trim();
-        const measured = memberCell.getBoundingClientRect().width;
-        if (!Number.isFinite(measured) || measured < 125) return;
-        const startingWidth = existing || `${measured}px`;
+        // Some Torn/FFScouter combinations define width only in stylesheets.
+        // Use the previously batched measurement for those rows instead of
+        // silently skipping every Link button.
+        const inlineWidth = memberCell.style.getPropertyValue('width').trim();
+        const startingWidth = inlineWidth || (fallbackWidth >= 125 ? `${fallbackWidth}px` : '');
+        if (!startingWidth) return;
+
         const cell = document.createElement('div');
         cell.className = 'gnsc-link-cell left' + (header ? ' gnsc-link-header' : '');
         if (header) {
@@ -344,8 +345,8 @@ function initChainPage() {
             button.addEventListener('click', event => handleFactionMemberChatClick(event, button, row));
             cell.appendChild(button);
         }
-        // Write one style and insert one node. Never measure the result, undo
-        // it and repeat on Torn's next update (that caused the v1.6.19 lag).
+        // Preserve a prior width *expression* instead of flattening its
+        // percentage/calc into pixels. Only touch the enemy Members cell.
         memberCell.style.setProperty('width', `calc(${startingWidth} - ${WAR_LINK_PX}px)`, 'important');
         clear.before(cell);
         processedEnemyRows.add(row);
@@ -1162,36 +1163,62 @@ if (isChain) {
 
 
     // --- Script Entry Point ---
-    function initializeVisibleElements() {
-        if (location.pathname.includes('profiles.php')) initProfilePage();
-        if (location.pathname.includes('factions.php')) {
-            initFactionPage();
-            initRankedWarPage();
-            initChainPage();
-        }
-        initMiniProfile();
-    }
-    initializeVisibleElements();
+    // Ranked-war controls are only mounted on the actual war view. The former
+    // code started a document-wide search on every factions.php page and
+    // immediately traversed the enemy roster twice.
+    const onRankedWarView = () =>
+        location.pathname === '/factions.php' && location.hash.startsWith('#/war/rank');
 
-    // Scope live-row observation to the ENEMY list only. The previous global
-    // document.body observer received mutations from chat, combat timers,
-    // other userscripts and both rosters even after the enemy list had loaded.
-    // Observing only the roster avoids that hot path while preserving Torn's
-    // ability to replace or reorder rows.
+    if (location.pathname.includes('profiles.php')) initProfilePage();
+    initMiniProfile();
+
     let observedEnemyList = null;
     let enemyListObserver = null;
+    let mountObserver = null;
+    let mountCheckScheduled = false;
     let pendingEnemyRows = new Set();
+    let pendingEnemyHeader = null;
     let enemyUpdateScheduled = false;
+
+    function stopWarObservers() {
+        mountObserver?.disconnect();
+        mountObserver = null;
+        enemyListObserver?.disconnect();
+        enemyListObserver = null;
+        observedEnemyList = null;
+        pendingEnemyRows.clear();
+        pendingEnemyHeader = null;
+    }
+
+    // Collect candidates and read any CSS-only widths before changing a single
+    // row. This avoids layout thrashing while supporting rows without inline width.
     function flushEnemyRows() {
         enemyUpdateScheduled = false;
+        if (!onRankedWarView()) {
+            pendingEnemyRows.clear();
+            pendingEnemyHeader = null;
+            return;
+        }
+        const candidates = [];
+        if (pendingEnemyHeader?.isConnected) candidates.push({row: pendingEnemyHeader, header: true});
+        pendingEnemyHeader = null;
         const rows = pendingEnemyRows;
         pendingEnemyRows = new Set();
         for (const row of rows) {
-            if (row.isConnected && row.closest('.enemy-faction')) addWarLinkCell(row);
+            if (row.isConnected && row.closest('.enemy-faction')) candidates.push({row, header: false});
         }
+        // Read phase: only measure elements with no width declared inline.
+        const ready = candidates.map(({row, header}) => {
+            const memberCell = row.querySelector(':scope > .member');
+            const needsWidth = memberCell && !memberCell.style.getPropertyValue('width').trim();
+            const width = needsWidth ? memberCell.getBoundingClientRect().width : 0;
+            return {row, header, width};
+        });
+        // Write phase: all inserts are grouped after the reads.
+        for (const {row, header, width} of ready) addWarLinkCell(row, header, width);
     }
     function queueEnemyRow(row) {
-        if (processedEnemyRows.has(row)) return;
+        if (!row || processedEnemyRows.has(row) || pendingEnemyRows.has(row)) return;
         pendingEnemyRows.add(row);
         if (!enemyUpdateScheduled) {
             enemyUpdateScheduled = true;
@@ -1199,17 +1226,21 @@ if (isChain) {
         }
     }
     function bindEnemyList() {
+        if (!onRankedWarView()) return false;
         const list = document.querySelector('.enemy-faction ul.members-list');
-        if (!list || list === observedEnemyList) return Boolean(list);
+        if (!list) return false;
+        if (list === observedEnemyList) return true;
         enemyListObserver?.disconnect();
         observedEnemyList = list;
-        injectButtonsIntoList(list); // once at mount, including its header
+        // Stage the header and all initial rows for one coherent layout update.
+        const header = list.previousElementSibling;
+        if (header?.matches('.white-grad') && !processedEnemyRows.has(header)) pendingEnemyHeader = header;
+        for (const row of list.querySelectorAll(':scope > li.enemy')) queueEnemyRow(row);
         enemyListObserver = new MutationObserver(records => {
             for (const record of records) {
                 for (const node of record.addedNodes) {
                     if (node.nodeType !== Node.ELEMENT_NODE) continue;
                     if (node.matches('li.enemy')) queueEnemyRow(node);
-                    // Torn can add a fragment/wrapper rather than a bare row.
                     else if (node.querySelectorAll) {
                         for (const row of node.querySelectorAll('li.enemy')) queueEnemyRow(row);
                     }
@@ -1219,15 +1250,34 @@ if (isChain) {
         enemyListObserver.observe(list, {childList: true, subtree: true});
         return true;
     }
-    if (location.pathname.includes('factions.php')) {
-        // Torn often mounts the war roster asynchronously. Stop observing the
-        // whole document as soon as the enemy roster becomes available.
-        if (!bindEnemyList()) {
-            const mountObserver = new MutationObserver(() => {
-                if (bindEnemyList()) mountObserver.disconnect();
-            });
+    function scheduleMountCheck() {
+        if (mountCheckScheduled) return;
+        mountCheckScheduled = true;
+        requestAnimationFrame(() => {
+            mountCheckScheduled = false;
+            if (!onRankedWarView()) return;
+            if (bindEnemyList()) {
+                mountObserver?.disconnect();
+                mountObserver = null;
+            }
+        });
+    }
+    function activateWarView() {
+        if (!onRankedWarView()) { stopWarObservers(); return; }
+        initRankedWarPage();
+        if (observedEnemyList?.isConnected) return;
+        // No polling timer. Observe only until the roster has mounted; at most
+        // one selector lookup per animation frame, regardless of mutation count.
+        if (bindEnemyList()) return;
+        if (!mountObserver) {
+            mountObserver = new MutationObserver(scheduleMountCheck);
             mountObserver.observe(document.body, {childList: true, subtree: true});
         }
+    }
+    if (location.pathname === '/factions.php') {
+        window.addEventListener('hashchange', () => { initChainPage(); activateWarView(); });
+        initChainPage();
+        activateWarView();
     }
 
     // --- Live Data Interception ---
